@@ -1,3 +1,9 @@
+
+## Customized to export notes/images in `markdown + Front Matter (Directory)` that can be easily imported into Joplin. Feel free to further improve. Pandoc  2.9.2.1 was tested.
+
+
+---
+
 This script will convert notes from Synology Note Station to plain-text markdown notes.  
 The script is written in Python and should work on any desktop platform. It's tested on Linux, Windows 7, mac OS 10.15.
 

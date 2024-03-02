@@ -1,5 +1,8 @@
 #!/usr/bin/env python
 
+
+#sudo apt-get install python3-bs4
+
 import os
 import re
 import sys
@@ -13,29 +16,31 @@ import collections
 import urllib.request
 import distutils.version
 from urllib.parse import unquote
-
+import hashlib
 from pathlib import Path
 
-
+from PIL import Image
+from bs4 import BeautifulSoup
+        
 # You can adjust some setting here. Default is for QOwnNotes app.
 
 ## Select meta data options
-meta_data_in_yaml = False  # True a YAML front matter block will contain the following meta data items.  
+meta_data_in_yaml = True  # True a YAML front matter block will contain the following meta data items.  
                            # False any selected meta data options below will be in the md text
 insert_title = True  # True will add the title of the note as a field in the YAML block, False no title in block.
-insert_ctime = False  # True to insert note creation time in the YAML block, False to disable.
-insert_mtime = False  # True to insert note modification time in the YAML block, False to disable.
+insert_ctime = True  # True to insert note creation time in the YAML block, False to disable.
+insert_mtime = True  # True to insert note modification time in the YAML block, False to disable.
 tags = True  # True to insert list of tags, False to disable
 tag_prepend = ''  # string to prepend each tag in a tag list inside the note, default is empty
 tag_delimiter = ', '  # string to delimit tags, default is comma separated list
 no_spaces_in_tags = False  # True to replace spaces in tag names with '_', False to keep spaces
 
 ## Select file link options
-links_as_URI = True  # True for file://link%20target style links, False for /link target style links
+links_as_URI = False  # True for file://link%20target style links, False for /link target style links
 absolute_links = False  # True for absolute links, False for relative links
 
 ## Select File/Attachments/Media options
-media_dir_name = 'media'  # name of the directory inside the produced directory where all images and attachments will be stored
+media_dir_name = '_resources'  # name of the directory inside the produced directory where all images and attachments will be stored
 md_file_ext = 'md'  # extension for produced markdown syntax note files
 creation_date_in_filename = False  # True to insert note creation time to the note file name, False to disable.
 
@@ -61,15 +66,15 @@ def create_yaml_meta_block():
     yaml_block = '---\n'
 
     if insert_title:
-        yaml_block = '{}Title: "{}"\n'.format(yaml_block, note_title)
-
-    if insert_ctime and note_ctime:
-        yaml_text_ctime = time.strftime('%Y-%m-%d %H:%M', time.localtime(note_ctime))
-        yaml_block = '{}Created: "{}"\n'.format(yaml_block, yaml_text_ctime)
+        yaml_block = '{}title: "{}"\n'.format(yaml_block,  re.sub(r'(["\\])', r'\\\1', note_title))
 
     if insert_mtime and note_mtime:
-        yaml_text_mtime = time.strftime('%Y-%m-%d %H:%M', time.localtime(note_mtime))
-        yaml_block = '{}Modified: "{}"\n'.format(yaml_block, yaml_text_mtime)
+        yaml_text_mtime = time.strftime('%Y-%m-%d %H:%M:%SZ', time.localtime(note_mtime))
+        yaml_block = '{}updated: "{}"\n'.format(yaml_block, yaml_text_mtime)
+
+    if insert_ctime and note_ctime:
+        yaml_text_ctime = time.strftime('%Y-%m-%d %H:%M:%SZ', time.localtime(note_ctime))
+        yaml_block = '{}created: "{}"\n'.format(yaml_block, yaml_text_ctime)
 
     if tags and note_data.get('tag', ''):
         if no_spaces_in_tags:
@@ -88,13 +93,15 @@ def create_yaml_meta_block():
 def create_text_meta_block():
     text_block = ''
     
+    insert_mtime = False
     if insert_mtime and note_mtime:
-        text_mtime = time.strftime('%Y-%m-%d %H:%M', time.localtime(note_mtime))
+        text_mtime = time.strftime('%Y-%m-%d %H:%M:%SZ', time.localtime(note_mtime))
         text_block = 'Modified: {}  \n{}'.format(text_mtime, text_block)
         
+    insert_ctime = True
     if insert_ctime and note_ctime:
-        text_ctime = time.strftime('%Y-%m-%d %H:%M', time.localtime(note_ctime))
-        text_block = 'Created: {}  \n{}'.format(text_ctime, text_block)
+        text_ctime = time.strftime('%Y-%m-%d %H:%M:%SZ', time.localtime(note_ctime))
+        text_block = '**Created: {}**\n{}'.format(text_ctime, text_block)
         
     if attachment_list:
         text_block = 'Attachments: {}  \n{}'.format(', '.join(attachment_list), text_block)
@@ -105,6 +112,7 @@ def create_text_meta_block():
         tag_list = tag_delimiter.join(''.join((tag_prepend, tag)) for tag in note_data['tag'])
         text_block = 'Tags: {}  \n{}'.format(tag_list, text_block)
     
+    insert_title = False
     if insert_title:
         text_block = '{}\n{}\n{}'.format(note_title, '=' * len(note_title), text_block)
     
@@ -132,7 +140,7 @@ try:
         pandoc_args = ['pandoc', '-f', 'html', '-t', 'markdown_strict+pipe_tables-raw_html',
                        '--wrap=none', '-o', pandoc_output_file.name, pandoc_input_file.name]
     elif distutils.version.LooseVersion(pandoc_ver) < distutils.version.LooseVersion('2.11.2'):
-        pandoc_args = ['pandoc', '-f', 'html', '-t', 'markdown_strict+pipe_tables-raw_html',
+        pandoc_args = ['pandoc', '-f', 'html', '-t', 'markdown+pipe_tables-raw_html',
                        '--wrap=none', '--atx-headers', '-o',
                        pandoc_output_file.name, pandoc_input_file.name]
     else:
@@ -204,18 +212,32 @@ for file in files_to_convert:
         except KeyError:
             continue
 
-        print('Converting note "{}"'.format(note_title))
+        #print("\n++++++++++++++++++++++++++++++++++++++\n")
+        print('\nConverting note[{}] "{}"'.format(note_id, note_title))
+        rawcontent = note_data.get('content', '')
+        #print(rawcontent)
+        soup = BeautifulSoup(rawcontent, 'html.parser')
+        for img in soup.find_all('img'):
+            if img.has_attr('class') and 'syno-notestation-image-object' in img['class'] and img.has_attr('ref'):
+                img['src'] = img['ref']
+                del img['ref']
+                del img['class']
+                #print(img)
+        content = re.sub(r'<div><br/></div>|<div></div>', '', str(soup), flags=re.I)
 
-        content = re.sub('<img class=[^>]*syno-notestation-image-object[^>]*src=[^>]*ref=',
-                         '<img src=', note_data.get('content', ''))
-
-
+        #print(content)
+        #print("\n++++++++++++++++++\n")
         Path(pandoc_input_file.name).write_text(content, 'utf-8')
         pandoc = subprocess.Popen(pandoc_args)
         pandoc.wait(20)
         content = Path(pandoc_output_file.name).read_text('utf-8')
-
-
+        content = re.sub(r'\n([^{}\n]+)\{style="font-weight: bold;"\}\n', r'\n**\1**\n', content, flags=re.I)
+        content = re.sub(r'\{#?[^{^}]*style=[^}]+\}', '', content, flags=re.I)
+        content = re.sub(r'\{[#\.][^{^}^#]+\}', '', content, flags=re.I)
+        content = re.sub(r'\n<div>\n|\n</div>\n|\n *::: *\n|^ *::: *\n|\n\\\n', '\n\n', content, flags=re.I)
+        content = re.sub(r'^<div>\n|\n<div>\n|\n</div>\n|\n</div>$|\n::: ?\n|\n\\\n', '\n\n', content, flags=re.I)
+        content = re.sub(r'\{width="[0-9]+"\s+height="[0-9]+"\}', '', content, flags=re.I)
+        content = re.sub(r'\n{2,}', '\n\n', content, flags=re.I)
         attachments_data = note_data.get('attachment')
         attachment_list = []
 
@@ -223,14 +245,19 @@ for file in files_to_convert:
             for attachment_id in note_data.get('attachment', ''):
 
                 ref = note_data['attachment'][attachment_id].get('ref', '')
+                ext = note_data['attachment'][attachment_id].get('ext', '')
+                if ext:
+                    ext = "." + ext
                 md5 = note_data['attachment'][attachment_id]['md5']
                 source = note_data['attachment'][attachment_id].get('source', '')
                 name = sanitise_path_string(note_data['attachment'][attachment_id]['name'])
                 name = name.replace('ns_attach_image_', '')
+                if ext and not re.search(ext+"$", name, flags=re.I):
+                    name = name + ext
+                name_parts = name.rpartition('.')
 
                 n = 1
                 while Path(parent_notebook.media_path / name).is_file():
-                    name_parts = name.rpartition('.')
                     name = ''.join((name_parts[0], '_{}'.format(n), name_parts[1], name_parts[2]))
                     n += 1
 
@@ -238,7 +265,8 @@ for file in files_to_convert:
                     if absolute_links:
                         link_path = Path(parent_notebook.media_path / name).as_uri()
                     else:
-                        link_path = 'file://{}/{}'.format(urllib.request.pathname2url(media_dir_name),
+                        #remove file:// to be compatible with Joplin
+                        link_path = '{}/{}'.format(urllib.request.pathname2url(media_dir_name),
                                                           urllib.request.pathname2url(name))
                 else:
                     if absolute_links:
@@ -247,18 +275,28 @@ for file in files_to_convert:
                         link_path = '{}/{}'.format(media_dir_name, name)
 
                 try:
-                    Path(parent_notebook.media_path / name).write_bytes(nsx_file.read('file_' + md5))
+                    file_con =  nsx_file.read('file_' + md5)
+                    if len(file_con) < 100:
+                        raise Exception("{} is too small, skip it".format('file_' + md5))
+                    Path(parent_notebook.media_path / name).write_bytes(file_con)
+                    img=Image.open(str(parent_notebook.media_path / name))
+                    img.verify()
+                    hasLocalFile = True
                     attachment_link = '[{}]({})'.format(name, link_path)
                 except Exception:
+                    hasLocalFile = False
                     if source:
                         attachment_link = '[{}]({})'.format(name, source)
                     else:
-                        print('Can\'t find attachment "{}" of note "{}"'.format(name, note_title))
+                        print('Can\'t find attachment "{}" of note "{}" or the file is too small or format error'.format(name, note_title))
                         attachment_link = '[NOT FOUND]({})'.format(link_path)
 
 
                 if ref and source:
-                    content = content.replace(ref, source)
+                    if hasLocalFile:
+                        content = content.replace(ref, link_path)
+                    else:
+                        content = content.replace(ref, source)
                 elif ref:
                     content = content.replace(ref, link_path)
                 else:
@@ -269,26 +307,28 @@ for file in files_to_convert:
                 or insert_ctime or insert_mtime:
             content = '\n' + content
 
+        content = unquote(content)  #fix uri malformed issue caused by % in url: [ttt](http://www.my.com/1.php?aid=164231&title=2016%3E%%E)
 
+        content = '{}\n{}'.format(create_text_meta_block(), content)
         if meta_data_in_yaml:
             content = '{}\n{}'.format(create_yaml_meta_block(), content)
-        else:
-            content = '{}\n{}'.format(create_text_meta_block(), content)
+        #else:
+        #    content = '{}\n{}'.format(create_text_meta_block(), content)
 
 
         if creation_date_in_filename and note_ctime:
             note_title = time.strftime('%Y-%m-%d ', time.localtime(note_ctime)) + note_title
 
-
-        md_file_name = sanitise_path_string(note_title) or 'Untitled'
+        note_title_hash = hashlib.sha256(bytes(note_title, 'utf-8')).hexdigest()
+        md_file_name = sanitise_path_string(note_title_hash) or 'Untitled'
         md_file_path = Path(parent_notebook.path / '{}.{}'.format(md_file_name, md_file_ext))
 
         n = 1
         while md_file_path.is_file():
-            md_file_path = Path(parent_notebook.path / ('{}_{}.{}'.format(
-                                            sanitise_path_string(note_title), n, md_file_ext)))
+            md_file_path = Path(parent_notebook.path / ('{}_{}.{}'.format(md_file_name, n, md_file_ext)))
             n += 1
 
+        print(f"note file name: {md_file_path}")
         md_file_path.write_text(content, 'utf-8')
 
         converted_note_ids.append(note_id)
